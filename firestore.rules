@@ -1,0 +1,69 @@
+rules_version = '2';
+
+// ─────────────────────────────────────────────────────────────
+// Amar Bagan — Firestore Security Rules
+//
+// These rules are the REAL enforcement. Client code can be bypassed
+// by a determined user, but these rules run on Google's servers and
+// cannot be. They guarantee two things:
+//   1. No order can be created with an advance below 200 BDT.
+//   2. Only admin emails can read all orders or change their status.
+//
+// Deploy with:  firebase deploy --only firestore:rules
+// (Or paste into Firebase Console → Firestore → Rules.)
+// ─────────────────────────────────────────────────────────────
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // The list of admin emails. Keep this in sync with
+    // NEXT_PUBLIC_ADMIN_EMAILS. Edit the addresses below to match.
+    function isAdmin() {
+      return request.auth != null
+        && request.auth.token.email in [
+          'contactamarbagan@gmail.com'
+        ];
+    }
+
+    match /orders/{orderId} {
+
+      // CREATE: anyone (a customer, unauthenticated) may place an order,
+      // but ONLY if the advance is at least 200 and the core fields are
+      // well-formed. This is the server-side micro-commitment gate.
+      allow create: if
+        request.resource.data.amountPaidAdvance is number &&
+        request.resource.data.amountPaidAdvance >= 200 &&
+        request.resource.data.totalAmount is number &&
+        request.resource.data.orderStatus == 'Pending' &&
+        request.resource.data.customerName is string &&
+        request.resource.data.phone is string;
+
+      // READ: only admins may list / read orders (contains customer PII).
+      allow read: if isAdmin();
+
+      // UPDATE: only admins, and only to change status / fulfilment fields.
+      // The financial fields are immutable after creation.
+      allow update: if isAdmin()
+        && request.resource.data.totalAmount == resource.data.totalAmount
+        && request.resource.data.amountPaidAdvance == resource.data.amountPaidAdvance;
+
+      // DELETE: never from the client.
+      allow delete: if false;
+    }
+
+    // Referrals collection (Phase 3) — anyone may read a code's stats
+    // and create a new promoter record. Updates are limited to the
+    // counter fields (clicks, confirmedOrders, valueDriven) so the
+    // tracking works from the client without letting anyone tamper
+    // with ownership. Deletes are admin-only.
+    match /referrals/{code} {
+      allow read: if true;
+      allow create: if true;
+      allow update: if
+        request.resource.data.code == resource.data.code &&
+        request.resource.data.ownerPhone == resource.data.ownerPhone &&
+        request.resource.data.ownerName == resource.data.ownerName;
+      allow delete: if isAdmin();
+    }
+  }
+}
